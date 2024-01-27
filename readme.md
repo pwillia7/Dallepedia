@@ -8,6 +8,8 @@ The extension will take each article image and generate a DALLE prompt and image
 
 [![Video Here](img/20240126214549.png)](https://www.youtube.com/watch?v=bto9mC3Xuac)
 
+Click here for a quick video demo.
+
 ## Features
 
 - **Image Toggle**: Users can switch between the original Wikipedia image and a DALL-E generated version.
