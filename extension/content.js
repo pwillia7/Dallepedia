@@ -1,5 +1,10 @@
 // Helper function to get image description (placeholder - implement based on Wikipedia's structure)
 console.log("Content script loaded");
+function isDalleEnabled(callback) {
+  chrome.storage.local.get('isExtensionEnabled', function(data) {
+      callback(data.isExtensionEnabled !== false);
+  });
+}
 
 const supabaseAuthToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjemp6a2txYWdjdXZ2cXF2d2VxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDU4Njg5MDksImV4cCI6MjAyMTQ0NDkwOX0.zGPd2QV-zUf7QrXlsfde9FTivgSbRX90t2Bt0FG2yyQ'; // Securely retrieve this token
 
@@ -12,30 +17,41 @@ function getImageDescription(imgElement) {
 // Function to create and attach a toggle button to each image
 function attachToggleButton(imgElement) {
   let toggleButton = document.createElement('button');
-  toggleButton.textContent = 'Toggle Image';
+  toggleButton.textContent = 'Show DALLE';
+  toggleButton.style.padding = '5px 10px';
+  toggleButton.style.fontSize = '12px';
+  toggleButton.style.background = 'rgba(0, 0, 0, 0.5)';
+  toggleButton.style.color = 'white';
+  toggleButton.style.border = 'none';
+  toggleButton.style.borderRadius = '5px';
+  toggleButton.style.cursor = 'pointer';
   toggleButton.style.position = 'absolute';
   toggleButton.style.zIndex = '1000';
-  toggleButton.style.left = '0'; // You might need to adjust this to position the button correctly
-  toggleButton.style.top = '0';  // You might need to adjust this to position the button correctly
-  toggleButton.onclick = (event) => toggleImageDisplay(imgElement, event);
+  toggleButton.style.left = '0';
+  toggleButton.style.top = '0';
+
+  toggleButton.onclick = (event) => {
+      toggleImageDisplay(imgElement, event, toggleButton);
+  };
   imgElement.parentNode.insertBefore(toggleButton, imgElement.nextSibling);
 }
+
 // Function to switch between original and DALLE-generated images
-function toggleImageDisplay(imgElement, event) {
+function toggleImageDisplay(imgElement, event, toggleButton) {
   event.preventDefault();
   event.stopPropagation();
 
   const originalSrc = imgElement.getAttribute('data-original-src');
   const dalleSrc = imgElement.getAttribute('data-dalle-src');
 
-  if (imgElement.src === originalSrc || !dalleSrc) {
-      imgElement.src = dalleSrc ? dalleSrc : originalSrc;
-      // Update srcset to ensure responsive images are handled correctly
-      imgElement.srcset = dalleSrc ? `${dalleSrc} 1x` : '';
-  } else {
+  if (imgElement.src !== originalSrc) {
       imgElement.src = originalSrc;
-      // Reset srcset when reverting to the original image
       imgElement.srcset = '';
+      toggleButton.textContent = 'Show Original'; // When the original is displayed
+  } else {
+      imgElement.src = dalleSrc || originalSrc;
+      imgElement.srcset = dalleSrc || '';
+      toggleButton.textContent = 'Show Original'; // When the DALL-E image is displayed
   }
 }
 
@@ -95,9 +111,17 @@ async function fetchDalleImageUrl(originalSrc, articleTitle, imgDescription) {
 
 function createLoadingIndicator() {
   const loader = document.createElement('div');
-  loader.textContent = 'Loading...'; // Replace with a proper loader element or animation
+  loader.textContent = 'Loading...';
   loader.style.position = 'absolute';
-  loader.style.zIndex = 1000;
+  loader.style.zIndex = '1001';
+  loader.style.left = '5px'; // Position it near the top-left corner of the image
+  loader.style.top = '5px';
+  loader.style.background = 'rgba(255, 255, 255, 0.7)';
+  loader.style.borderRadius = '10px';
+  loader.style.padding = '5px';
+  loader.style.color = 'black';
+  loader.style.fontSize = '12px';
+  loader.style.fontWeight = 'bold';
   return loader;
 }
 
@@ -105,33 +129,44 @@ async function processImage(imgElement, articleTitle) {
   const originalSrc = imgElement.src;
   imgElement.setAttribute('data-original-src', originalSrc);
 
-  const loader = createLoadingIndicator();
-  imgElement.parentNode.appendChild(loader);
-
-  const imgDescription = getImageDescription(imgElement);
-
-  // Get the API key from storage
-  const apiKey = await getApiKey();
-
-  if (apiKey) {
-      // First, try to retrieve existing DALL-E image URL
-      const existingDalleImageUrl = await getExistingDalleImageUrl(originalSrc);
-      let dalleImageUrl;
-      if (existingDalleImageUrl) {
-          dalleImageUrl = existingDalleImageUrl;
-      } else {
-          // If no existing image, generate a new one
-          dalleImageUrl = await requestImageGeneration(originalSrc, articleTitle, imgDescription, apiKey);
+  // Check if DALLE generation is enabled before processing images
+  isDalleEnabled(async (enabled) => {
+      if (!enabled) {
+          console.log('DALLE generation is disabled.');
+          return;
       }
-      
-      imgElement.setAttribute('data-dalle-src', dalleImageUrl || originalSrc);
-  } else {
-      console.error('OpenAI API key is not set.');
-  }
 
-  loader.remove();
-  attachToggleButton(imgElement);
+      const imgDescription = getImageDescription(imgElement);
+      const apiKey = await getApiKey();
+
+      if (apiKey) {
+          const loader = createLoadingIndicator();
+          imgElement.parentNode.appendChild(loader);
+
+          // First, try to retrieve existing DALL-E image URL
+          const existingDalleImageUrl = await getExistingDalleImageUrl(originalSrc);
+          let dalleImageUrl;
+          if (existingDalleImageUrl) {
+              dalleImageUrl = existingDalleImageUrl;
+          } else {
+              // If no existing image, generate a new one
+              dalleImageUrl = await requestImageGeneration(originalSrc, articleTitle, imgDescription, apiKey);
+          }
+
+          loader.remove();
+          if (dalleImageUrl) {
+              imgElement.setAttribute('data-dalle-src', dalleImageUrl);
+              attachToggleButton(imgElement); // Attach the toggle button only when the image is loaded
+          } else {
+              console.error('Failed to load DALL-E image.');
+              // Optionally, change the loading indicator to an error message
+          }
+      } else {
+          console.error('OpenAI API key is not set.');
+      }
+  });
 }
+
 
 // Helper function to get the API key from chrome storage
 function getApiKey() {
@@ -147,14 +182,15 @@ function getApiKey() {
 }
 
 function init() {
-  setTimeout(() => {
-    console.log('Dallepedia running...');
-    const articleTitle = document.querySelector('h1').innerText;
-    const images = document.querySelectorAll('figure.mw-default-size img.mw-file-element'); 
-    images.forEach(imgElement => {
-        processImage(imgElement, articleTitle);
-    });
-  }, 1000);
+  const articleTitle = document.querySelector('h1').innerText;
+
+  // Selects all images that are descendants of the #bodyContent div and are visible
+  const images = document.querySelectorAll('#bodyContent img:not([style*="display:none"]):not([style*="visibility:hidden"])');
+  images.forEach(imgElement => {
+      if (imgElement.offsetWidth > 150 && imgElement.offsetHeight > 150) { // Check if the image is larger than 150x150
+          processImage(imgElement, articleTitle);
+      }
+});
 }
 
 init();
