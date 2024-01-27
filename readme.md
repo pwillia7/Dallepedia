@@ -2,7 +2,7 @@
 
 Dallepedia is a Chrome Extension that enhances the visual experience on Wikipedia by integrating DALL-E generated images. It allows users to toggle between original Wikipedia images and their DALL-E generated counterparts, with a unique feature of saving and retrieving images from a database to optimize the generation process.
 
-[!][Video Here](img/20240126214549.png)(https://www.youtube.com/watch?v=bto9mC3Xuac)
+[![Video Here](img/20240126214549.png)](https://www.youtube.com/watch?v=bto9mC3Xuac)
 
 ## Features
 
