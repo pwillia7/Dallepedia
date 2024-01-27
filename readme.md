@@ -6,9 +6,11 @@ The extension will take each article image and generate a DALLE prompt and image
 
 [Built entirely with Code-Bi-Wan ChatGPT](https://chat.openai.com/g/g-ZdiOhxKwp-code-bi-wan)
 
+![example](img/example.gif)
+
+Video below
 [![Video Here](img/20240126214549.png)](https://www.youtube.com/watch?v=bto9mC3Xuac)
 
-Click here for a quick video demo.
 
 ## Features
 
