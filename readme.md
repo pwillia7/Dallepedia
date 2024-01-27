@@ -52,7 +52,3 @@ Contributions are welcome. Please fork the repository and submit a pull request 
 ## Disclaimer
 
 This extension is not affiliated with Wikipedia or OpenAI. It is a community-driven project for educational purposes.
-
----
-
-Developed with ❤️ by [Your Name/Team]
