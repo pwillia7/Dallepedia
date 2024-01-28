@@ -4,6 +4,18 @@ import { createClient } from 'https://cdn.skypack.dev/@supabase/supabase-js';
 const supabaseUrl = Deno.env.get('SUPABASE_URL');
 const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const supabase = createClient(supabaseUrl, supabaseKey);
+const stableDiffusionBaseUrl = 'https://d1183acd201929131b.gradio.live';
+
+async function fetchImageAsBase64(url) {
+    const response = await fetch(url);
+    const arrayBuffer = await response.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+    let binary = '';
+    uint8Array.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+    });
+    return btoa(binary);
+}
 
 async function getExistingImage(originalImageUrl) {
     try {
@@ -46,7 +58,7 @@ async function generateVisionPrompt(imageUrl, articleTitle, imgDescription, open
                         content: [
                             {
                                 type: "text",
-                                text: "Create a DALL-E prompt for an accurate, beautiful, realistic and more modern version of this image: '${imgDescription}' in the Wikipedia article titled: ${articleTitle}."
+                                text: `Create a DALL-E prompt for an accurate, beautiful, realistic and more modern version of this image: '${imgDescription}' in the Wikipedia article titled: ${articleTitle}. Include details about the medium, lighting and other details based on what you see in the image and you best guess to improve it. The following is an example addition to the prompt for a photograph, but it could be other mediums too. Use your best judgement to build the best prompt you can i.e. '3 point lighting, flash with softbox, by Annie Leibovitz, 80mm, hasselblad, f2.8`
                             },
                             {
                                 type: "image_url",
@@ -84,39 +96,62 @@ async function generateVisionPrompt(imageUrl, articleTitle, imgDescription, open
     }
 }
 
-async function generateDalleImage(prompt, openAIKey) {
-    const dalleApiUrl = 'https://api.openai.com/v1/images/generations';
+async function generateImageWithStableDiffusion(prompt, originalImageUrl, width, height) {
+    const endpoint = `${stableDiffusionBaseUrl}/sdapi/v1/img2img`;
+    const base64Image = await fetchImageAsBase64(originalImageUrl);
+
+    let payload;
+
     try {
-        const response = await fetch(dalleApiUrl, {
+        payload = {
+            prompt: prompt ,
+            negative_prompt: "worst quality, normal quality, low quality, low res, blurry, text, watermark, logo, banner, extra digits, cropped, jpeg artifacts, signature, username, error, sketch ,duplicate, ugly, monochrome, horror, geometry, mutation, disgusting, bad anatomy, bad hands, three hands, three legs, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, worst face, three crus, extra crus, fused crus, worst feet, three feet, fused feet, fused thigh, three thigh, fused thigh, extra thigh, worst thigh, missing fingers, extra fingers, ugly fingers, long fingers, horn, extra eyes, huge eyes, 2girl, amputation, disconnected limbs, cartoon, cg, 3d, unreal, animate",
+            styles: [],
+            seed: -1,
+            sampler_name: "DPM++ 3M SDE Karras",
+            batch_size: 1,
+            n_iter: 1,
+            steps: 35,
+            cfg_scale: 7,
+            width: width,
+            height: height,
+            denoising_strength: 0.4,
+            init_images: [`data:image/png;base64,${base64Image}`]
+        };
+
+        const response = await fetch(endpoint, {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${openAIKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: 'dall-e-3',
-                prompt: prompt,
-                n: 1,
-                size: '1024x1024'
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
         });
+
+        // Check if response is ok
+        if (!response.ok) {
+            console.error(`HTTP error! status: ${response.status}`);
+            const errorBody = await response.text();
+            console.error("Error response body:", errorBody);
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
         const data = await response.json();
-        console.log("DALL-E API response:", JSON.stringify(data));
-        return data.data[0].url;
+        console.log("Stable Diffusion API response:", JSON.stringify(data));
+        return data.images[0];
     } catch (error) {
-        console.error("Error in generateDalleImage:", error);
+        console.error("Error in generateImageWithStableDiffusion:", error);
+        console.error("Payload sent:", JSON.stringify(payload));
         throw error;
     }
 }
 
-async function saveToSupabaseStorage(imageUrl, articleTitle) {
-    try {
-        const imageResponse = await fetch(imageUrl);
-        const buffer = await imageResponse.arrayBuffer();
-        const filename = `${articleTitle}/${Date.now()}-${Math.random().toString(36).substring(2, 15)}.jpg`;
-        const file = new Blob([buffer], { type: 'image/jpeg' });
 
-        const { data, error } = await supabase.storage.from('dalle_images_bucket').upload(filename, file);
+async function saveToSupabaseStorage(base64Image, articleTitle) {
+    try {
+        // Convert base64 string to a Blob
+        const response = await fetch(`data:image/jpeg;base64,${base64Image}`);
+        const blob = await response.blob();
+        const filename = `${articleTitle}/${Date.now()}-${Math.random().toString(36).substring(2, 15)}.jpg`;
+
+        const { data, error } = await supabase.storage.from('dalle_images_bucket').upload(filename, blob);
 
         if (error) {
             console.error("Error uploading file to Supabase Storage:", error.message);
@@ -130,6 +165,7 @@ async function saveToSupabaseStorage(imageUrl, articleTitle) {
         throw error;
     }
 }
+
 function setCORSHeaders(headers) {
     headers.set('Access-Control-Allow-Origin', '*');
     headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -158,20 +194,24 @@ serve(async (req) => {
 
     if (req.method === 'POST' && req.url.includes('/dallepedia-server/generate-image')) {
         try {
-            const { originalImageUrl, articleTitle, imgDescription, openAIKey } = await req.json();
+            const { originalImageUrl, articleTitle, imgDescription, openAIKey, width, height } = await req.json();
             const visionPrompt = await generateVisionPrompt(originalImageUrl, articleTitle, imgDescription, openAIKey);
-            const generatedImageUrl = await generateDalleImage(visionPrompt, openAIKey);
+            const generatedImageUrl = await generateImageWithStableDiffusion(visionPrompt, originalImageUrl, width, height);
             const storedImageUrl = await saveToSupabaseStorage(generatedImageUrl, articleTitle);
+
             const insertResponse = await supabase
                 .from('dalle_images')
                 .insert([{ wikipedia_image_url: originalImageUrl, dalle_image_url: storedImageUrl, article_title: articleTitle, image_description: imgDescription }]);
+            
             console.log("Supabase insert response:", JSON.stringify(insertResponse));
             if (insertResponse.error) throw insertResponse.error;
+
             return new Response(JSON.stringify({ dalleImageUrl: storedImageUrl }), { status: 200, headers });
         } catch (error) {
             console.error("Error in POST request handling:", error);
             return new Response(JSON.stringify({ error: 'Error generating image' }), { status: 500, headers });
         }
     }
+
     return new Response('Not Found', { status: 404, headers });
 }, { port: 8080 });
