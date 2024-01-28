@@ -4,7 +4,7 @@ import { createClient } from 'https://cdn.skypack.dev/@supabase/supabase-js';
 const supabaseUrl = Deno.env.get('SUPABASE_URL');
 const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const supabase = createClient(supabaseUrl, supabaseKey);
-const stableDiffusionBaseUrl = 'https://d1183acd201929131b.gradio.live';
+const stableDiffusionBaseUrl = 'http://ptkwilliams.ddns.net:6969';
 
 async function fetchImageAsBase64(url) {
     const response = await fetch(url);
@@ -111,11 +111,11 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
             sampler_name: "DPM++ 3M SDE Karras",
             batch_size: 1,
             n_iter: 1,
-            steps: 35,
+            steps: 30,
             cfg_scale: 7,
             width: width,
             height: height,
-            denoising_strength: 0.4,
+            denoising_strength: 0.6,
             init_images: [`data:image/png;base64,${base64Image}`]
         };
 
@@ -176,42 +176,50 @@ function setCORSHeaders(headers) {
 serve(async (req) => {
     const headers = new Headers();
     setCORSHeaders(headers);
-    if (req.method === 'OPTIONS') {
-        return new Response(null, { status: 204, headers });
-    }
-    if (req.method === 'GET' && req.url.includes('/get-image')) {
-        const urlParams = new URL(req.url).searchParams;
-        const originalImageUrl = urlParams.get('originalImageUrl');
-        
-        if (originalImageUrl) {
-            const existingImageUrl = await getExistingImage(originalImageUrl);
-            return new Response(JSON.stringify({ dalleImageUrl: existingImageUrl }), { status: 200, headers });
+
+    try {
+        if (req.method === 'OPTIONS') {
+            return new Response(null, { status: 204, headers });
         }
-
-        return new Response('Invalid request', { status: 400, headers });
-    }
-
-
-    if (req.method === 'POST' && req.url.includes('/dallepedia-server/generate-image')) {
-        try {
-            const { originalImageUrl, articleTitle, imgDescription, openAIKey, width, height } = await req.json();
-            const visionPrompt = await generateVisionPrompt(originalImageUrl, articleTitle, imgDescription, openAIKey);
-            const generatedImageUrl = await generateImageWithStableDiffusion(visionPrompt, originalImageUrl, width, height);
-            const storedImageUrl = await saveToSupabaseStorage(generatedImageUrl, articleTitle);
-
-            const insertResponse = await supabase
-                .from('dalle_images')
-                .insert([{ wikipedia_image_url: originalImageUrl, dalle_image_url: storedImageUrl, article_title: articleTitle, image_description: imgDescription }]);
+        if (req.method === 'GET' && req.url.includes('/get-image')) {
+            const urlParams = new URL(req.url).searchParams;
+            const originalImageUrl = urlParams.get('originalImageUrl');
             
-            console.log("Supabase insert response:", JSON.stringify(insertResponse));
-            if (insertResponse.error) throw insertResponse.error;
-
-            return new Response(JSON.stringify({ dalleImageUrl: storedImageUrl }), { status: 200, headers });
-        } catch (error) {
-            console.error("Error in POST request handling:", error);
-            return new Response(JSON.stringify({ error: 'Error generating image' }), { status: 500, headers });
+            if (originalImageUrl) {
+                const existingImageUrl = await getExistingImage(originalImageUrl);
+                return new Response(JSON.stringify({ dalleImageUrl: existingImageUrl }), { status: 200, headers });
+            }
+    
+            return new Response('Invalid request', { status: 400, headers });
         }
-    }
+    
+    
+        if (req.method === 'POST' && req.url.includes('/dallepedia-server/generate-image')) {
+            try {
+                const { originalImageUrl, articleTitle, imgDescription, openAIKey, width, height } = await req.json();
+                const visionPrompt = await generateVisionPrompt(originalImageUrl, articleTitle, imgDescription, openAIKey);
+                const generatedImageUrl = await generateImageWithStableDiffusion(visionPrompt, originalImageUrl, width, height);
+                const storedImageUrl = await saveToSupabaseStorage(generatedImageUrl, articleTitle);
+    
+                const insertResponse = await supabase
+                    .from('dalle_images')
+                    .insert([{ wikipedia_image_url: originalImageUrl, dalle_image_url: storedImageUrl, article_title: articleTitle, image_description: imgDescription }]);
+                
+                console.log("Supabase insert response:", JSON.stringify(insertResponse));
+                if (insertResponse.error) throw insertResponse.error;
+    
+                return new Response(JSON.stringify({ dalleImageUrl: storedImageUrl }), { status: 200, headers });
+            } catch (error) {
+                console.error("Error in POST request handling:", error);
+                return new Response(JSON.stringify({ error: 'Error generating image' }), { status: 500, headers });
+            }
+        }
+        return new Response('Not Found', { status: 404, headers });
 
-    return new Response('Not Found', { status: 404, headers });
+    } catch (error) {
+        console.error("Server Error:", error);
+        // Ensure CORS headers are set even in error responses
+        return new Response(JSON.stringify({ error: 'Internal Server Error' }), { status: 500, headers });
+    }
 }, { port: 8080 });
+
