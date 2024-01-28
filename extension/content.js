@@ -199,13 +199,12 @@ function attachGlobalToggleButton() {
     document.body.insertBefore(toggleButton, document.body.firstChild);
 }
 
-// Function to observe changes in the DOM for the modal
 function observeModalChanges() {
     const observer = new MutationObserver(mutations => {
         mutations.forEach(mutation => {
             if (mutation.addedNodes.length) {
                 mutation.addedNodes.forEach(node => {
-                    if (node.classList && node.classList.contains('mw-mmv-image')) {
+                    if (node.classList && node.classList.contains('mw-mmv-wrapper')) {
                         addToggleButtonToModal(node);
                     }
                 });
@@ -216,41 +215,56 @@ function observeModalChanges() {
     observer.observe(document.body, { childList: true, subtree: true });
 }
 
-// Function to add a toggle button to the modal
 function addToggleButtonToModal(modalNode) {
     if (modalNode.querySelector('#toggleLargeImage')) return;
 
     const largeImage = modalNode.querySelector('img');
     if (!largeImage) return;
 
+    if (largeImage.complete) {
+        setTimeout(() => addToggle(modalNode, largeImage), 500);
+    } else {
+        largeImage.onload = () => setTimeout(() => addToggle(modalNode, largeImage), 500);
+    }
+}
+
+function addToggle(modalNode, largeImage) {
+    // Get the clicked thumbnail image's DALL-E URL
+    let clickedThumbnail = document.querySelector(`img[data-original-src="${largeImage.src}"]`);
+    let dalleSrc = clickedThumbnail ? clickedThumbnail.getAttribute('data-dalle-src') : null;
+
+    if (showingDalleImages && dalleSrc) {
+        largeImage.src = dalleSrc;
+    }
+
+    largeImage.setAttribute('data-dalle-src', dalleSrc);
+    largeImage.setAttribute('data-original-src', largeImage.src);
+
     const toggleButton = document.createElement('button');
     toggleButton.id = 'toggleLargeImage';
-    toggleButton.textContent = 'Show Original';
-    toggleButton.style.position = 'absolute';
-    toggleButton.style.bottom = '10px';
+    toggleButton.textContent = showingDalleImages && dalleSrc ? 'Show Original' : 'Show DALL-E';
+    toggleButton.style.position = 'fixed';
+    toggleButton.style.bottom = '340px';
     toggleButton.style.right = '10px';
-    toggleButton.style.zIndex = '1001';
+    toggleButton.style.zIndex = '1901';
+    toggleButton.style.display = 'block';
 
     toggleButton.addEventListener('click', function() {
+        const currentSrc = largeImage.src;
         const dalleSrc = largeImage.getAttribute('data-dalle-src');
         const originalSrc = largeImage.getAttribute('data-original-src');
 
-        if (largeImage.src === dalleSrc) {
+        if (currentSrc === dalleSrc) {
             largeImage.src = originalSrc;
             this.textContent = 'Show DALL-E Image';
         } else {
             largeImage.src = dalleSrc;
             this.textContent = 'Show Original';
         }
-
-        if (DEBUG_MODE) console.log(`Toggled large image to ${largeImage.src}`);
     });
 
     modalNode.appendChild(toggleButton);
-    if (DEBUG_MODE) console.log('Toggle button added to modal.');
 }
-
-
 
 function init() {
     isDalleEnabled(async (enabled) => {
