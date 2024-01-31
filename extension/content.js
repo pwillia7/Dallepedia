@@ -43,54 +43,41 @@ function updateGlobalToggleButton() {
     const toggleButton = document.getElementById('toggleAllImagesButton');
     if (toggleButton) {
         toggleButton.textContent = ongoingGenerations > 0 ? 'Loading...' : (showingDalleImages ? 'Show Original' : 'Show DALL-E');
-        if (ongoingGenerations > 0) {
-            toggleButton.style.backgroundColor = 'yellow';
-            toggleButton.style.color = 'black'; // Better contrast with yellow background
-        } else {
+        // Update button color only when all generations are complete
+        if (ongoingGenerations === 0) {
             toggleButton.style.backgroundColor = 'lightblue';
             toggleButton.style.color = 'white'; // White text for light blue background
+        } else {
+            toggleButton.style.backgroundColor = 'yellow';
+            toggleButton.style.color = 'black'; // Better contrast with yellow background
         }
     }
 }
 
+
 async function getExistingDalleImageUrl(originalSrc) {
     try {
         const response = await fetch(`https://vczjzkkqagcuvvqqvweq.supabase.co/functions/v1/dallepedia-server/get-image?originalImageUrl=${encodeURIComponent(originalSrc)}`, {
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${supabaseAuthToken}`
-            }
+            headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseAuthToken}`}
         });
         const data = await response.json();
-        ongoingGenerations--; // Decrement count after request completion
-        updateGlobalToggleButton(); // Update button color and text
         return data.dalleImageUrl;
     } catch (error) {
         console.error('Error retrieving image:', error);
-        ongoingGenerations--; // Decrement even on error
-        updateGlobalToggleButton();
         return null;
+    } finally {
+        updateGlobalToggleButton();
     }
 }
+
+
 async function requestImageGeneration(largerImageUrl, articleTitle, imgDescription, apiKey, width, height) {
-    ongoingGenerations++; // Increment for generate-image request
     updateGlobalToggleButton();
     try {
         const response = await fetch('https://vczjzkkqagcuvvqqvweq.supabase.co/functions/v1/dallepedia-server/generate-image', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'apikey': supabaseAuthToken,
-                'Authorization': `Bearer ${supabaseAuthToken}`
-            },
-            body: JSON.stringify({
-                originalImageUrl: largerImageUrl,
-                articleTitle: articleTitle,
-                imgDescription: imgDescription,
-                openAIKey: apiKey,
-                width: width,
-                height: height
-            })
+            headers: {'Content-Type': 'application/json', 'apikey': supabaseAuthToken, 'Authorization': `Bearer ${supabaseAuthToken}`},
+            body: JSON.stringify({originalImageUrl: largerImageUrl, articleTitle, imgDescription, openAIKey: apiKey, width, height})
         });
         const data = await response.json();
         return data.dalleImageUrl;
@@ -98,36 +85,30 @@ async function requestImageGeneration(largerImageUrl, articleTitle, imgDescripti
         console.error('Error generating image:', error);
         return null;
     } finally {
-        ongoingGenerations--; // Decrement after generate-image request completion or failure
         updateGlobalToggleButton();
     }
 }
+
 async function processImageInBatch(images, articleTitle) {
-    const batchSize = 5;
+    const batchSize = 2;
     let generateImageQueue = [];
 
     for (const imgElement of images) {
         const fullSizeUrl = getFullSizeImageUrl(imgElement.src);
-        ongoingGenerations++; // Increment for each image being processed
-        try {
-            const existingDalleImageUrl = await getExistingDalleImageUrl(fullSizeUrl);
-            if (existingDalleImageUrl) {
-                updateImages(imgElement, existingDalleImageUrl);
-            } else {
-                generateImageQueue.push({ imgElement, fullSizeUrl, articleTitle });
-            }
-        } catch (error) {
-            console.error('Error retrieving image:', error);
-            if (DEBUG_MODE) console.log(`Failed retrieving existing image: ${fullSizeUrl}`);
-        } finally {
-            ongoingGenerations--; // Decrement after processing each image
-            updateGlobalToggleButton();
+        const existingDalleImageUrl = await getExistingDalleImageUrl(fullSizeUrl);
+
+        if (!existingDalleImageUrl) {
+            generateImageQueue.push({ imgElement, fullSizeUrl, articleTitle });
+            ongoingGenerations++; // Increment only for new image generation requests
+        } else {
+            updateImages(imgElement, existingDalleImageUrl);
         }
     }
 
+    updateGlobalToggleButton(); // Update the toggle button after setting the initial count
+
     while (generateImageQueue.length > 0) {
         const currentBatch = generateImageQueue.splice(0, batchSize);
-        if (DEBUG_MODE) console.log(`Processing batch: ${currentBatch.map(i => i.fullSizeUrl)}`);
         await processBatch(currentBatch);
     }
 }
@@ -135,36 +116,68 @@ async function processImageInBatch(images, articleTitle) {
 
 async function processBatch(batch) {
     const apiKey = await getApiKey();
-    for (const { imgElement, fullSizeUrl, articleTitle } of batch) {
-        const loader = createLoadingIndicator();
-        imgElement.parentNode.appendChild(loader);
-        ongoingGenerations++;
-        updateGlobalToggleButton();
+    const generationPromises = batch.map(({ imgElement, fullSizeUrl, articleTitle }) => processSingleImage(imgElement, fullSizeUrl, articleTitle, apiKey));
+    await Promise.all(generationPromises);
+}
 
-        try {
-            const imgDescription = getImageDescription(imgElement);
-            const image = new Image();
-            image.onload = async () => {
-                const width = image.naturalWidth;
-                const height = image.naturalHeight;
-                const dalleImageUrl = await requestImageGeneration(fullSizeUrl, articleTitle, imgDescription, apiKey, width, height);
-                updateImages(imgElement, dalleImageUrl);
-                loader.remove();
-            };
-            image.onerror = () => {
-                console.error('Error loading full-size image.');
-                loader.remove();
-            };
-            image.src = fullSizeUrl;
-        } catch (error) {
-            console.error('Error processing image:', error);
-            loader.remove();
-        } finally {
-            ongoingGenerations--;
-            updateGlobalToggleButton();
+async function processSingleImage(imgElement, fullSizeUrl, articleTitle, apiKey) {
+    const loader = createLoadingIndicator();
+    imgElement.parentNode.appendChild(loader);
+
+    try {
+        updateImageUrl(imgElement); // Update the image URL
+        await imgElement.decode(); // Ensure the image is loaded to get natural dimensions
+
+        let width = imgElement.naturalWidth;
+        let height = imgElement.naturalHeight;
+        const maxDimension = 1024;
+
+        // Adjust dimensions if either is greater than 1300px
+        if (width > 1300 || height > 1300) {
+            if (width > height) {
+                // Maintain aspect ratio
+                height = Math.round((maxDimension / width) * height);
+                width = maxDimension;
+            } else {
+                width = Math.round((maxDimension / height) * width);
+                height = maxDimension;
+            }
         }
+
+        const imgDescription = getImageDescription(imgElement);
+        const dalleImageUrl = await requestImageGeneration(imgElement.src, articleTitle, imgDescription, apiKey, width, height);
+
+        if (dalleImageUrl) {
+            updateImages(imgElement, dalleImageUrl);
+        }
+    } catch (error) {
+        console.error('Error processing image:', error);
+    } finally {
+        loader.remove();
+        ongoingGenerations--;
+        updateGlobalToggleButton();
     }
 }
+
+function updateImageUrl(imgElement) {
+    const newSrc = imgElement.src.replace('/thumb', '').split('/').slice(0, -1).join('/');
+    imgElement.src = newSrc;
+    imgElement.srcset = '';
+}
+
+function setupBeforeUnloadWarning() {
+    window.addEventListener('beforeunload', function (e) {
+        // Check if there are ongoing generations
+        if (ongoingGenerations > 0) {
+            // Cancel the event
+            e.preventDefault(); 
+            // Chrome requires returnValue to be set
+            e.returnValue = '';
+        }
+    });
+}
+
+
 
 function updateImages(imgElement, dalleImageUrl) {
     if (!imgElement.getAttribute('data-original-src')) {
@@ -294,21 +307,29 @@ function createDalleModal(imageUrl) {
     
 }
 document.querySelectorAll('#bodyContent img').forEach(img => {
-    img.addEventListener('click', () => {
-        lastClickedThumbnail = img; // Update the last clicked thumbnail
-    });
+    img.addEventListener('click', () => lastClickedThumbnail = img);
 });
 
 function addToggleButtonToModal(modalNode) {
-    if (modalNode.querySelector('#toggleLargeImage')) return;
-
     const largeImage = modalNode.querySelector('img');
-    if (!largeImage) return;
-
-    if (largeImage.complete) {
-        addToggle(modalNode, largeImage);
-    } else {
-        largeImage.onload = () => addToggle(modalNode, largeImage);
+    if (largeImage && !modalNode.querySelector('#toggleLargeImage')) {
+        const toggleButton = document.createElement('button');
+        toggleButton.id = 'toggleLargeImage';
+        toggleButton.textContent = 'Show DALL-E Image';
+        toggleButton.style.position = 'fixed';
+        toggleButton.style.bottom = '340px';
+        toggleButton.style.right = '10px';
+        toggleButton.style.zIndex = '1901';
+        toggleButton.style.display = 'block';
+        toggleButton.addEventListener('click', () => {
+            if (lastClickedThumbnail) {
+                const dalleSrc = lastClickedThumbnail.getAttribute('data-dalle-src');
+                if (dalleSrc) {
+                    createDalleModal(dalleSrc);
+                }
+            }
+        });
+        modalNode.appendChild(toggleButton);
     }
 }
 
@@ -341,21 +362,17 @@ function addToggle(modalNode, largeImage) {
 function init() {
     isDalleEnabled(async (enabled) => {
         if (enabled) {
-            if (DEBUG_MODE) console.log('DALL-E Image Extension enabled.');
             attachGlobalToggleButton();
             observeModalChanges();
+            setupBeforeUnloadWarning();
             const articleTitle = document.querySelector('h1').innerText;
             const images = document.querySelectorAll('#bodyContent img:not([style*="display:none"]):not([style*="visibility:hidden"])');
             const eligibleImages = Array.from(images).filter(img => img.offsetWidth > 50 && img.offsetHeight > 50);
+
             if (eligibleImages.length > 0) {
-                if (DEBUG_MODE) console.log(`Processing ${eligibleImages.length} eligible images`);
                 await processImageInBatch(eligibleImages, articleTitle);
             }
-        } else {
-            if (DEBUG_MODE) console.log('DALL-E Image Extension disabled.');
         }
     });
 }
-
-
 init();

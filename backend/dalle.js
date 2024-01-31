@@ -6,6 +6,37 @@ const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const supabase = createClient(supabaseUrl, supabaseKey);
 const stableDiffusionBaseUrl = 'http://ptkwilliams.ddns.net:6969';
 
+interface QueueItem {
+    visionPrompt: string;
+    originalImageUrl: string;
+    width: number;
+    height: number;
+    articleTitle: string;
+}
+let requestQueue: QueueItem[] = [];
+let isProcessingQueue = false;
+async function processQueue() {
+    if (isProcessingQueue || requestQueue.length === 0) return;
+    isProcessingQueue = true;
+
+    const request = requestQueue.shift();
+    try {
+        const generatedImageUrl = await generateImageWithStableDiffusion(request.visionPrompt, request.originalImageUrl, request.width, request.height);
+        const storedImageUrl = await saveToSupabaseStorage(generatedImageUrl, request.articleTitle);
+        return storedImageUrl;
+    } catch (error) {
+        console.error("Error processing queue item:", error);
+        throw error;
+    } finally {
+        isProcessingQueue = false;
+        if (requestQueue.length > 0) {
+            processQueue(); // Process next item if queue is not empty
+        }
+    }
+}
+
+
+
 async function fetchImageAsBase64(url) {
     const response = await fetch(url);
     const arrayBuffer = await response.arrayBuffer();
@@ -51,14 +82,14 @@ async function generateVisionPrompt(imageUrl, articleTitle, imgDescription, open
                 messages: [
                     {
                         role: "system",
-                        content: "Only output the DALLE prompt. Do not output any additional text, information, comments, style or other output. Only output the DALLE prompt. Output: [DALLE PROMPT]"
+                        content: "Only output the DALLE prompt. Do not output any additional text, information, comments, style or other output. Only output the DALLE prompt."
                     },
                     {
                         role: "user",
                         content: [
                             {
                                 type: "text",
-                                text: `Create a DALL-E prompt for an accurate, beautiful, realistic and more modern version of this image: '${imgDescription}' in the Wikipedia article titled: ${articleTitle}. Include details about the medium, lighting and other details based on what you see in the image and you best guess to improve it. The following is an example addition to the prompt for a photograph, but it could be other mediums too. Use your best judgement to build the best prompt you can i.e. '3 point lighting, flash with softbox, by Annie Leibovitz, 80mm, hasselblad, f2.8`
+                                text: `Create a DALL-E prompt for an accurate, beautiful, realistic and more modern version of this image: '${imgDescription}' in the Wikipedia article titled: ${articleTitle}. Research Prompt Engineering to help you build the most appropriate prompt for the image.`
                             },
                             {
                                 type: "image_url",
@@ -103,7 +134,7 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
     let payload;
 
     try {
-        payload = {
+        payload = { 
             prompt: prompt ,
             negative_prompt: "worst quality, normal quality, low quality, low res, blurry, text, watermark, logo, banner, extra digits, cropped, jpeg artifacts, signature, username, error, sketch ,duplicate, ugly, monochrome, horror, geometry, mutation, disgusting, bad anatomy, bad hands, three hands, three legs, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, worst face, three crus, extra crus, fused crus, worst feet, three feet, fused feet, fused thigh, three thigh, fused thigh, extra thigh, worst thigh, missing fingers, extra fingers, ugly fingers, long fingers, horn, extra eyes, huge eyes, 2girl, amputation, disconnected limbs, cartoon, cg, 3d, unreal, animate",
             styles: [],
@@ -112,11 +143,52 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
             batch_size: 1,
             n_iter: 1,
             steps: 30,
-            cfg_scale: 7,
+            cfg_scale: 8.5,
             width: width,
             height: height,
             denoising_strength: 0.6,
-            init_images: [`data:image/png;base64,${base64Image}`]
+            init_images: [`data:image/png;base64,${base64Image}`],
+            controlnet_units: [
+                {
+                  control_mode: "Balanced",
+                  enabled: "True",
+                  guidance_end: 0.75,
+                  guidance_start: 0,
+                  image: {
+                    image: `data:image/png;base64,${base64Image}`
+                  },
+                  input_mode: "simple",
+                  is_ui: "False",
+                  loopback: "False",
+                  low_vram: "False",
+                  model: "control_v11f1p_sd15_depth [cfd03158]",
+                  module: "depth",
+                  pixel_perfect: "False",
+                  processor_res: 2048,
+                  "weight": 1.4
+                },
+                {
+                    control_mode: "Balanced",
+                    enabled: "True",
+                    guidance_end: 1,
+                    guidance_start: 0,
+                    image: {
+                        image: `data:image/png;base64,${base64Image}`
+                    },
+                    input_mode: "simple",
+                    is_ui: "False",
+                    loopback: "False",
+                    low_vram: "False",
+                    model: "none",
+                    module: "tile_resample",
+                    threshold_a: 1.18,
+                    pixel_perfect: "False",
+                    processor_res: 2048,
+                    weight: 1
+                  }
+              ],
+            alwayson_scripts: {}
+             
         };
 
         const response = await fetch(endpoint, {
@@ -198,23 +270,17 @@ serve(async (req) => {
             try {
                 const { originalImageUrl, articleTitle, imgDescription, openAIKey, width, height } = await req.json();
                 const visionPrompt = await generateVisionPrompt(originalImageUrl, articleTitle, imgDescription, openAIKey);
-                const generatedImageUrl = await generateImageWithStableDiffusion(visionPrompt, originalImageUrl, width, height);
-                const storedImageUrl = await saveToSupabaseStorage(generatedImageUrl, articleTitle);
     
-                const insertResponse = await supabase
-                    .from('dalle_images')
-                    .insert([{ wikipedia_image_url: originalImageUrl, dalle_image_url: storedImageUrl, article_title: articleTitle, image_description: imgDescription }]);
-                
-                console.log("Supabase insert response:", JSON.stringify(insertResponse));
-                if (insertResponse.error) throw insertResponse.error;
+                requestQueue.push({ visionPrompt, originalImageUrl, width, height, articleTitle });
+                const storedImageUrl = await processQueue();
+                return new Response(JSON.stringify({ dalleImageUrl: storedImageUrl }), { status: 200 });
     
-                return new Response(JSON.stringify({ dalleImageUrl: storedImageUrl }), { status: 200, headers });
             } catch (error) {
                 console.error("Error in POST request handling:", error);
-                return new Response(JSON.stringify({ error: 'Error generating image' }), { status: 500, headers });
+                return new Response(JSON.stringify({ error: 'Error generating image' }), { status: 500 });
             }
         }
-        return new Response('Not Found', { status: 404, headers });
+            return new Response('Not Found', { status: 404, headers });
 
     } catch (error) {
         console.error("Server Error:", error);
