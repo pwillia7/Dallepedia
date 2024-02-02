@@ -7,14 +7,22 @@ const stableDiffusionBaseUrl = 'http://ptkwilliams.ddns.net:6969';
 let requestQueue = [];
 let isProcessingQueue = false;
 
+function normalizeAndEncodeUrl(url: string): string {
+  // First, decompose Unicode characters and remove diacritics
+  const decomposedUrl = url.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // Then, manually replace spaces and commas as they're not covered by encodeURIComponent
+  const spaceAndCommaHandledUrl = decomposedUrl.replace(/ /g, '%20').replace(/,/g, '%2C');
+  // Finally, encode the rest of the URL components
+  return encodeURI(spaceAndCommaHandledUrl);
+}
+
+
 async function processQueue() {
   if (isProcessingQueue || requestQueue.length === 0) return;
   isProcessingQueue = true;
   const request = requestQueue.shift();
   try {
-    // Determine optimal dimensions for the image
-    const { optimalWidth, optimalHeight } = determineOptimalDimensions(request.width, request.height);
-    const generatedImageUrl = await generateImageWithStableDiffusion(request.visionPrompt, request.originalImageUrl, optimalWidth, optimalHeight);
+    const generatedImageUrl = await generateImageWithStableDiffusion(request.visionPrompt, request.originalImageUrl, request.width, request.height);
     const storedImageUrl = await saveToSupabaseStorage(generatedImageUrl, request.articleTitle);
     await insertImageRecord(request.originalImageUrl, storedImageUrl, request.articleTitle); // New line to insert the record
     return storedImageUrl;
@@ -26,52 +34,8 @@ async function processQueue() {
     if (requestQueue.length > 0) {
       processQueue(); // Process next item if queue is not empty
     }
-  }
+  }  
 }
-
-function determineOptimalDimensions(width, height) {
-  const totalPixels = width * height;
-  if (totalPixels >= 1000000) {
-    return { optimalWidth: width, optimalHeight: height }; // Return original dimensions if they are already large enough
-  }
-
-  const aspectRatio = width / height;
-  let optimalWidth = width;
-  let optimalHeight = height;
-
-  // Adjust dimensions based on common aspect ratios for SDXL
-  if (aspectRatio === 1) { // Square
-    optimalWidth = optimalHeight = 1024;
-  } else if (aspectRatio === 3 / 2) { // 3:2 Landscape
-    optimalWidth = 1152;
-    optimalHeight = 768;
-  } else if (aspectRatio === 2 / 3) { // 2:3 Portrait
-    optimalWidth = 768;
-    optimalHeight = 1152;
-  } else if (aspectRatio === 4 / 3) { // 4:3 Landscape
-    optimalWidth = 1152;
-    optimalHeight = 864;
-  } else if (aspectRatio === 3 / 4) { // 3:4 Portrait
-    optimalWidth = 864;
-    optimalHeight = 1152;
-  } else if (aspectRatio === 16 / 9) { // 16:9 Widescreen
-    optimalWidth = 1360;
-    optimalHeight = 768;
-  } else if (aspectRatio === 9 / 16) { // 9:16 Tall
-    optimalWidth = 768;
-    optimalHeight = 1360;
-  } else { // Default to square if aspect ratio is not recognized
-    optimalWidth = optimalHeight = 1024;
-  }
-
-  // Ensure dimensions are divisible by 8
-  optimalWidth = Math.floor(optimalWidth / 8) * 8;
-  optimalHeight = Math.floor(optimalHeight / 8) * 8;
-
-  return { optimalWidth, optimalHeight };
-}
-
-
 async function fetchImageAsBase64(url) {
   const response = await fetch(url);
   const arrayBuffer = await response.arrayBuffer();
@@ -83,17 +47,24 @@ async function fetchImageAsBase64(url) {
   return btoa(binary);
 }
 async function getExistingImage(originalImageUrl) {
+  // Apply URL normalization and encoding before querying the database
+  const encodedImageUrl = normalizeAndEncodeUrl(originalImageUrl);
   try {
-    const { data, error } = await supabase.from('dalle_images').select('dalle_image_url').eq('wikipedia_image_url', originalImageUrl).single();
-    if (error) {
-      throw error;
-    }
-    return data ? data.dalle_image_url : null;
+      const { data, error } = await supabase
+          .from('dalle_images')
+          .select('dalle_image_url')
+          .eq('wikipedia_image_url', encodedImageUrl)
+          .single();
+      if (error) {
+          throw error;
+      }
+      return data ? data.dalle_image_url : null;
   } catch (error) {
-    console.error("Error in getExistingImage:", error);
-    return null;
+      console.error("Error in getExistingImage:", error);
+      return null;
   }
 }
+
 async function generateVisionPrompt(imageUrl, articleTitle, imgDescription, openAIKey) {
   const visionApiUrl = 'https://api.openai.com/v1/chat/completions';
   try {
@@ -115,7 +86,7 @@ async function generateVisionPrompt(imageUrl, articleTitle, imgDescription, open
             content: [
               {
                 type: "text",
-                text: `Create a DALL-E prompt for a, beautiful, realistic and more modern version of this image: '${imgDescription}' in the Wikipedia article titled: ${articleTitle}. Research Prompt Engineering to help you build the most appropriate prompt for the image.`
+                text: `Create a DALL-E prompt for a realistic, updated version of the subject in this image: '${imgDescription}' in the Wikipedia article titled: ${articleTitle}. Research Prompt Engineering to help you build the best prompt.`
               },
               {
                 type: "image_url",
@@ -159,14 +130,14 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
       negative_prompt: "worst quality, normal quality, low quality, low res, blurry, text, watermark, logo, banner, extra digits, cropped, jpeg artifacts, signature, username, error, sketch ,duplicate, ugly, monochrome, horror, geometry, mutation, disgusting, bad anatomy, bad hands, three hands, three legs, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, worst face, three crus, extra crus, fused crus, worst feet, three feet, fused feet, fused thigh, three thigh, fused thigh, extra thigh, worst thigh, missing fingers, extra fingers, ugly fingers, long fingers, horn, extra eyes, huge eyes, 2girl, amputation, disconnected limbs, cartoon, cg, 3d, unreal, animate",
       styles: [],
       seed: -1,
-      sampler_name: "DPM++ 3M SDE Karras",
+      sampler_name: "DPM++ SDE Karras",
       batch_size: 1,
       n_iter: 1,
-      steps: 30,
-      cfg_scale: 6,
+      steps: 6,
+      cfg_scale: 2,
       width: width,
       height: height,
-      denoising_strength: 0.9,
+      denoising_strength: 1.0,
       processor_res: width,
       init_images: [
         `data:image/jpg;base64,${base64Image}`
@@ -185,12 +156,12 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
               },
               loopback: "False",
               low_vram: "False",
-              model: "kohya_controllllite_xl_canny [2ed264be]",
+              model: "diffusers_xl_canny_full [2b69fca4]",
               module: "canny",
-              pixel_perfect: "False",
-              weight: 1.0,
-              threshold_a: 100,
-              threshold_b: 200
+              pixel_perfect: "True",
+              weight: 0.4,
+              threshold_a: 50,
+              threshold_b: 225
             }
           ]
         } 
@@ -220,17 +191,23 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
   }
 }
 async function insertImageRecord(wikipediaImageUrl, dalleImageUrl, articleTitle) {
-  const { data, error } = await supabase.from('dalle_images').insert([
-    { wikipedia_image_url: wikipediaImageUrl, dalle_image_url: dalleImageUrl, article_title: articleTitle }
-  ]);
-
-  if (error) {
-    console.error("Error inserting image record into database:", error);
-    throw error;
+  // Normalize and encode URL before inserting into the database
+  const encodedImageUrl = normalizeAndEncodeUrl(wikipediaImageUrl);
+  try {
+      const { data, error } = await supabase
+          .from('dalle_images')
+          .insert([
+              { wikipedia_image_url: encodedImageUrl, dalle_image_url: dalleImageUrl, article_title: articleTitle }
+          ]);
+      if (error) {
+          throw error;
+      }
+      console.log("Image record successfully inserted:", data);
+      return data;
+  } catch (error) {
+      console.error("Error inserting image record into database:", error);
+      throw error;
   }
-
-  console.log("Image record successfully inserted:", data);
-  return data;
 }
 
 async function saveToSupabaseStorage(base64Image, articleTitle) {

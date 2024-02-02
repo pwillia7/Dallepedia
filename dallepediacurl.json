@@ -1,0 +1,58 @@
+curl -X POST \
+  http://ptkwilliams.ddns.net:6969/sdapi/v1/img2img \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prompt": "A scenic landscape with mountains in the background and a river in the foreground",
+    "negative_prompt": "worst quality, normal quality, low quality, low res, blurry, text, watermark, logo, banner, extra digits, cropped, jpeg artifacts, signature, username, error, sketch ,duplicate, ugly, monochrome, horror, geometry, mutation, disgusting, bad anatomy, bad hands, three hands, three legs, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, worst face, three crus, extra crus, fused crus, worst feet, three feet, fused feet, fused thigh, three thigh, fused thigh, extra thigh, worst thigh, missing fingers, extra fingers, ugly fingers, long fingers, horn, extra eyes, huge eyes, 2girl, amputation, disconnected limbs, cartoon, cg, 3d, unreal, animate",
+    "styles": [],
+    "seed": -1,
+    "sampler_name": "DPM++ 3M SDE Karras",
+    "batch_size": 1,
+    "n_iter": 1,
+    "steps": 30,
+    "cfg_scale": 8.5,
+    "width": 512,
+    "height": 512,
+    "denoising_strength": 0.6,
+    "init_images": ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII="],
+      "controlnet_units": [
+        {
+          "control_mode": "Balanced",
+          "enabled": "True",
+          "guidance_end": 0.75,
+          "guidance_start": 0,
+          "image": {
+            "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII="
+          },
+          "input_mode": "simple",
+          "is_ui": "False",
+          "loopback": "False",
+          "low_vram": "False",
+          "model": "control_v11f1p_sd15_depth [cfd03158]",
+          "module": "depth",
+          "pixel_perfect": "False",
+          "processor_res": 2048,
+          "weight": 1.4
+        },
+        {
+            "control_mode": "Balanced",
+            "enabled": "True",
+            "guidance_end": 1,
+            "guidance_start": 0,
+            "image": {
+                "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII="
+            },
+            "input_mode": "simple",
+            "is_ui": "False",
+            "loopback": "False",
+            "low_vram": "False",
+            "model": "none",
+            "module": "tile_resample",
+            "threshold_a": 1.18,
+            "pixel_perfect": "False",
+            "processor_res": 2048,
+            "weight": 1
+          }
+      ]   
+    
+  }'
