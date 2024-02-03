@@ -46,17 +46,20 @@ async function fetchImageAsBase64(url) {
   });
   return btoa(binary);
 }
-async function getExistingImage(originalImageUrl) {
-  // Apply URL normalization and encoding before querying the database
-  const encodedImageUrl = normalizeAndEncodeUrl(originalImageUrl);
+async function getExistingImage(originalImageUrl: string) {
+  // Ensure the URL is encoded correctly before querying the database
+  // This step assumes originalImageUrl is already properly encoded once
+  // If it's not, adjust the encoding logic accordingly
+  const decodedImageUrl = decodeURIComponent(originalImageUrl);
   try {
       const { data, error } = await supabase
           .from('dalle_images')
           .select('dalle_image_url')
-          .eq('wikipedia_image_url', encodedImageUrl)
+          .eq('wikipedia_image_url', decodedImageUrl)
           .single();
       if (error) {
-          throw error;
+          console.error("Error in getExistingImage:", error);
+          return null;
       }
       return data ? data.dalle_image_url : null;
   } catch (error) {
@@ -79,14 +82,14 @@ async function generateVisionPrompt(imageUrl, articleTitle, imgDescription, open
         messages: [
           {
             role: "system",
-            content: "Only output the DALLE prompt. Do not output any additional text, information, comments, style or other output. Only output the DALLE prompt."
+            content: "Only output the DALLE prompt. Do not output any additional text, information, or comments. Only output the DALLE prompt."
           },
           {
             role: "user",
             content: [
               {
                 type: "text",
-                text: `Create a DALL-E prompt for a realistic, updated version of the subject in this image: '${imgDescription}' in the Wikipedia article titled: ${articleTitle}. Research Prompt Engineering to help you build the best prompt.`
+                text: `Create a DALL-E prompt for a realistic, updated version of this Wikipedia image in the article: '${articleTitle}'. The image's description is ${imgDescription}.`
               },
               {
                 type: "image_url",
@@ -120,14 +123,16 @@ async function generateVisionPrompt(imageUrl, articleTitle, imgDescription, open
     throw error;
   }
 }
-async function generateImageWithStableDiffusion(prompt, originalImageUrl, width, height) {
+async function generateImageWithStableDiffusion(prompt, originalImageUrl, originalWidth, originalHeight) {
   const endpoint = `${stableDiffusionBaseUrl}/sdapi/v1/img2img`;
   const base64Image = await fetchImageAsBase64(originalImageUrl);
+  const { width: adjustedWidth, height: adjustedHeight } = adjustImageSize(originalWidth, originalHeight);
+
   let payload;
   try {
     payload = {
       prompt: prompt,
-      negative_prompt: "worst quality, normal quality, low quality, low res, blurry, text, watermark, logo, banner, extra digits, cropped, jpeg artifacts, signature, username, error, sketch ,duplicate, ugly, monochrome, horror, geometry, mutation, disgusting, bad anatomy, bad hands, three hands, three legs, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, worst face, three crus, extra crus, fused crus, worst feet, three feet, fused feet, fused thigh, three thigh, fused thigh, extra thigh, worst thigh, missing fingers, extra fingers, ugly fingers, long fingers, horn, extra eyes, huge eyes, 2girl, amputation, disconnected limbs, cartoon, cg, 3d, unreal, animate",
+      negative_prompt: "(worst quality, low quality, illustration, 3d, 2d, painting, cartoons, sketch), open mouth",
       styles: [],
       seed: -1,
       sampler_name: "DPM++ SDE Karras",
@@ -135,10 +140,10 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
       n_iter: 1,
       steps: 6,
       cfg_scale: 2,
-      width: width,
-      height: height,
+      width: adjustedWidth,
+      height: adjustedHeight,
       denoising_strength: 1.0,
-      processor_res: width,
+      processor_res: Math.min(adjustedWidth, adjustedHeight),
       init_images: [
         `data:image/jpg;base64,${base64Image}`
       ],
@@ -146,11 +151,11 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
         controlnet: {
           args: [
             {
-              control_mode: "Balanced",
+              control_mode: "ControlNet is more important",
               enabled: "True",
               guidance_end: 1,
               guidance_start: 0,
-              processor_res: width,
+              processor_res: Math.min(adjustedWidth, adjustedHeight),
               image: {
                 image: `data:image/jpg;base64,${base64Image}`
               },
@@ -159,14 +164,15 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
               model: "diffusers_xl_canny_full [2b69fca4]",
               module: "canny",
               pixel_perfect: "True",
-              weight: 0.4,
-              threshold_a: 50,
+              weight: 1.3,
+              threshold_a: 100,
               threshold_b: 225
             }
           ]
         } 
       }
     };
+
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -190,6 +196,24 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, width,
     throw error;
   }
 }
+
+function adjustImageSize(width: number, height: number): { width: number; height: number } {
+  const numPixels = width * height;
+  const minSize = 262144; // 512x512
+  const maxSize = 2359296; // 1536x1536
+
+  if (numPixels < minSize) {
+    width *= 2;
+    height *= 2;
+  } else if (numPixels > maxSize) {
+    const aspectRatio = width / height;
+    height = Math.sqrt(maxSize / aspectRatio);
+    width = aspectRatio * height;
+  }
+
+  return {width: Math.round(width), height: Math.round(height)};
+}
+
 async function insertImageRecord(wikipediaImageUrl, dalleImageUrl, articleTitle) {
   // Normalize and encode URL before inserting into the database
   const encodedImageUrl = normalizeAndEncodeUrl(wikipediaImageUrl);
@@ -230,10 +254,8 @@ async function saveToSupabaseStorage(base64Image, articleTitle) {
   }
 }
 function setCORSHeaders(headers) {
-  headers.set('Access-Control-Allow-Origin', '*');
-  headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, apikey');
-  headers.set('Access-Control-Allow-Credentials', 'true');
+  headers.set(  'Access-Control-Allow-Origin', '*');
+  headers.set('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type');
 }
 serve(async (req)=>{
   const headers = new Headers();
@@ -249,9 +271,7 @@ serve(async (req)=>{
       const urlParams = new URL(req.url).searchParams;
       const originalImageUrl = urlParams.get('originalImageUrl');
       if (originalImageUrl) {
-        const decodedOriginalImageUrl = decodeURIComponent(originalImageUrl)
-        console.log("Decoded URL for get-image: " + decodedOriginalImageUrl)
-        const existingImageUrl = await getExistingImage(decodedOriginalImageUrl);
+        const existingImageUrl = await getExistingImage(originalImageUrl);
         return new Response(JSON.stringify({
           dalleImageUrl: existingImageUrl
         }), {

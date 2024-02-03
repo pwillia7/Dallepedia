@@ -1,4 +1,4 @@
-console.log("Content script loaded");
+console.log("WikipixAI initialized...1");
 
 let showingDalleImages = false;
 let ongoingGenerations = 0;
@@ -11,6 +11,27 @@ function isDalleEnabled(callback) {
         callback(data.isExtensionEnabled !== false);
     });
 }
+async function getWikiImageMetadata(fileName) {
+    const endpoint = `https://en.wikipedia.org/w/api.php?action=query&format=json&formatversion=2&prop=imageinfo&titles=File:${encodeURIComponent(fileName)}&iiprop=timestamp|url|size|mime|mediatype|extmetadata&iiextmetadatafilter=DateTime|DateTimeOriginal|ObjectName|ImageDescription|License|LicenseShortName|UsageTerms|LicenseUrl|Credit|Artist|AuthorCount|GPSLatitude|GPSLongitude|Permission|Attribution|AttributionRequired|NonFree|Restrictions|DeletionReason&iiextmetadatalanguage=en&uselang=content&smaxage=300&maxage=300`;
+    const response = await fetch(endpoint);
+    if (!response.ok) throw new Error('Failed to fetch image metadata');
+    const data = await response.json();
+    const imageInfo = data.query.pages[0].imageinfo[0];
+    const imageDescription = imageInfo.extmetadata.ImageDescription && imageInfo.extmetadata.ImageDescription.value ? imageInfo.extmetadata.ImageDescription.value : 'No description available.';
+    // Include image description in the returned metadata
+    return { ...imageInfo, description: imageDescription };
+}
+function getImageFileName(url) {
+    // Match only the portion of the URL up to and including the first file extension
+    const pattern = /\/([^\/]+?\.(jpg|jpeg|png|gif|svg))/i;
+    const matches = url.match(pattern);
+    if (matches && matches.length > 1) {
+        // DecodeURIComponent is used to ensure any encoded characters are correctly interpreted
+        return decodeURIComponent(matches[1]);
+    }
+    return null; // Return null if a valid file name couldn't be extracted
+}
+
 
 function getImageDescription(imgElement) {
     const figureParent = imgElement.closest('figure');
@@ -28,9 +49,6 @@ function getImageDescription(imgElement) {
     return '';
 }
 
-function getFullSizeImageUrl(thumbnailUrl) {
-    return thumbnailUrl.replace('/thumb', '').split('/').slice(0, -1).join('/');
-}
 
 function createLoadingIndicator() {
     const loader = document.createElement('div');
@@ -55,15 +73,18 @@ function updateGlobalToggleButton() {
 }
 
 
-async function getExistingDalleImageUrl(originalSrc) {
+async function getExistingDalleImageUrl(fullImageUrl) {
     try {
-        const response = await fetch(`https://vczjzkkqagcuvvqqvweq.supabase.co/functions/v1/dallepedia-server/get-image?originalImageUrl=${encodeURIComponent(originalSrc)}`, {
-            headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseAuthToken}`}
+        const response = await fetch(`https://vczjzkkqagcuvvqqvweq.supabase.co/functions/v1/dallepedia-server/get-image?originalImageUrl=${encodeURIComponent(fullImageUrl)}`, {
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseAuthToken}`
+            }
         });
         const data = await response.json();
         return data.dalleImageUrl;
     } catch (error) {
-        console.error('Error retrieving image:', error);
+        console.error('Error retrieving existing DALL-E image:', error);
         return null;
     } finally {
         updateGlobalToggleButton();
@@ -71,98 +92,82 @@ async function getExistingDalleImageUrl(originalSrc) {
 }
 
 
-async function requestImageGeneration(largerImageUrl, articleTitle, imgDescription, apiKey, width, height) {
-    updateGlobalToggleButton();
-    try {
-        const response = await fetch('https://vczjzkkqagcuvvqqvweq.supabase.co/functions/v1/dallepedia-server/generate-image', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json', 'apikey': supabaseAuthToken, 'Authorization': `Bearer ${supabaseAuthToken}`},
-            body: JSON.stringify({originalImageUrl: largerImageUrl, articleTitle, imgDescription, openAIKey: apiKey, width, height})
-        });
-        const data = await response.json();
-        return data.dalleImageUrl;
-    } catch (error) {
-        console.error('Error generating image:', error);
-        return null;
-    } finally {
-        updateGlobalToggleButton();
-    }
-}
-
+// This function now properly queues images for processing based on metadata from Wikipedia
 async function processImageInBatch(images, articleTitle) {
-    const batchSize = 2;
     let generateImageQueue = [];
 
     for (const imgElement of images) {
-        const fullSizeUrl = getFullSizeImageUrl(imgElement.src);
-        const existingDalleImageUrl = await getExistingDalleImageUrl(fullSizeUrl);
+        const fileName = getImageFileName(imgElement.src);
+        if (!fileName) continue;
 
-        if (!existingDalleImageUrl) {
-            generateImageQueue.push({ imgElement, fullSizeUrl, articleTitle });
-            ongoingGenerations++; // Increment only for new image generation requests
-        } else {
-            updateImages(imgElement, existingDalleImageUrl);
+        try {
+            const metadata = await getWikiImageMetadata(fileName);
+            if (metadata) {
+                const { url: fullSizeUrl, description, width, height } = metadata;
+                const existingDalleImageUrl = await getExistingDalleImageUrl(fullSizeUrl);
+                if (!existingDalleImageUrl) {
+                    generateImageQueue.push({ imgElement, fullSizeUrl, articleTitle, description, width, height });
+                    ongoingGenerations++;
+                    updateGlobalToggleButton();
+                } else {
+                    updateImages(imgElement, existingDalleImageUrl);
+                }
+            }
+        } catch (error) {
+            console.error('Error processing image metadata:', error);
         }
     }
 
-    updateGlobalToggleButton(); // Update the toggle button after setting the initial count
-
     while (generateImageQueue.length > 0) {
-        const currentBatch = generateImageQueue.splice(0, batchSize);
+        const currentBatch = generateImageQueue.splice(0, 2);
         await processBatch(currentBatch);
     }
 }
-
-
 async function processBatch(batch) {
     const apiKey = await getApiKey();
-    const generationPromises = batch.map(({ imgElement, fullSizeUrl, articleTitle }) => processSingleImage(imgElement, fullSizeUrl, articleTitle, apiKey));
+    const generationPromises = batch.map(item => 
+        processSingleImage(item.imgElement, item.fullSizeUrl, item.articleTitle, apiKey, item.description, item.width, item.height)
+    );
     await Promise.all(generationPromises);
 }
 
-async function processSingleImage(imgElement, fullSizeUrl, articleTitle, apiKey) {
+// Adjusted to use metadata for image processing
+// Adjusted to use metadata for image processing, including width and height
+async function processSingleImage(imgElement, fullSizeUrl, articleTitle, apiKey, description, width, height) {
     const loader = createLoadingIndicator();
-    imgElement.parentNode.appendChild(loader);
+    imgElement.parentNode.insertBefore(loader, imgElement);
 
     try {
-        updateImageUrl(imgElement); // Update the image URL
-        await imgElement.decode(); // Ensure the image is loaded to get natural dimensions
+        const payload = {
+            originalImageUrl: fullSizeUrl,
+            articleTitle: articleTitle,
+            imgDescription: description.replace(/<(.|\n)*?>/g, ''),
+            openAIKey: apiKey,
+            width: width, // Ensure width is included
+            height: height // Ensure height is included
+        };
 
-        let width = imgElement.naturalWidth;
-        let height = imgElement.naturalHeight;
-        const maxDimension = 1024;
+        const response = await fetch('https://vczjzkkqagcuvvqqvweq.supabase.co/functions/v1/dallepedia-server/generate-image', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseAuthToken}`
+            },
+            body: JSON.stringify(payload)
+        });
 
-        // Adjust dimensions if either is greater than 1300px
-        if (width > 1300 || height > 1300) {
-            if (width > height) {
-                // Maintain aspect ratio
-                height = Math.round((maxDimension / width) * height);
-                width = maxDimension;
-            } else {
-                width = Math.round((maxDimension / height) * width);
-                height = maxDimension;
-            }
-        }
+        const data = await response.json();
 
-        const imgDescription = getImageDescription(imgElement);
-        const dalleImageUrl = await requestImageGeneration(imgElement.src, articleTitle, imgDescription, apiKey, width, height);
-
-        if (dalleImageUrl) {
-            updateImages(imgElement, dalleImageUrl);
+        if (data.dalleImageUrl) {
+            updateImages(imgElement, data.dalleImageUrl);
         }
     } catch (error) {
-        console.error('Error processing image:', error);
+        console.error('Error generating image:', error);
     } finally {
         loader.remove();
         ongoingGenerations--;
         updateGlobalToggleButton();
     }
-}
-
-function updateImageUrl(imgElement) {
-    const newSrc = imgElement.src.replace('/thumb', '').split('/').slice(0, -1).join('/');
-    imgElement.src = newSrc;
-    imgElement.srcset = '';
 }
 
 function setupBeforeUnloadWarning() {
