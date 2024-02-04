@@ -104,11 +104,26 @@ async function processImageInBatch(images, articleTitle) {
             const metadata = await getWikiImageMetadata(fileName);
             if (metadata) {
                 const { url: fullSizeUrl, description, width, height } = metadata;
-                const existingDalleImageUrl = await getExistingDalleImageUrl(fullSizeUrl);
+                
+                // Determine if the image exceeds the resizing threshold
+                const needsResizing = (width * height) > 1440000; // More than 1200x1200 pixels
+                const targetWidth = needsResizing ? 1200 : width;
+                const targetHeight = needsResizing ? Math.floor((height / width) * 1200) : height; // Maintain aspect ratio
+                
+                // Adjust the image URL for resizing, if necessary
+                const adjustedImageUrl = needsResizing ? adjustImageUrl(fullSizeUrl, targetWidth) : fullSizeUrl;
+
+                const existingDalleImageUrl = await getExistingDalleImageUrl(adjustedImageUrl);
                 if (!existingDalleImageUrl) {
-                    generateImageQueue.push({ imgElement, fullSizeUrl, articleTitle, description, width, height });
+                    generateImageQueue.push({
+                        imgElement,
+                        fullSizeUrl: adjustedImageUrl, // Pass the resized URL
+                        articleTitle,
+                        description,
+                        width: targetWidth, // Pass the correct width for the resized image
+                        height: targetHeight // Pass the correct height for the resized image
+                    });
                     ongoingGenerations++;
-                    updateGlobalToggleButton();
                 } else {
                     updateImages(imgElement, existingDalleImageUrl);
                 }
@@ -122,7 +137,10 @@ async function processImageInBatch(images, articleTitle) {
         const currentBatch = generateImageQueue.splice(0, 2);
         await processBatch(currentBatch);
     }
+
+    updateGlobalToggleButton();
 }
+
 async function processBatch(batch) {
     const apiKey = await getApiKey();
     const generationPromises = batch.map(item => 
@@ -314,6 +332,18 @@ function createDalleModal(imageUrl) {
 document.querySelectorAll('#bodyContent img').forEach(img => {
     img.addEventListener('click', () => lastClickedThumbnail = img);
 });
+
+function adjustImageUrl(originalUrl, targetWidth) {
+    // Split the original URL to insert '/thumb/' and the target width correctly
+    const parts = originalUrl.split('/wikipedia/commons/');
+    const fileName = parts[1].split('/').pop(); // Extract the filename
+
+    // Construct the new URL for resizing
+    const adjustedUrl = `${parts[0]}/wikipedia/commons/thumb/${parts[1]}/${targetWidth}px-${fileName}`;
+
+    return adjustedUrl;
+}
+
 
 function addToggleButtonToModal(modalNode) {
     const largeImage = modalNode.querySelector('img');

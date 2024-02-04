@@ -47,26 +47,33 @@ async function fetchImageAsBase64(url) {
   return btoa(binary);
 }
 async function getExistingImage(originalImageUrl: string) {
-  // Ensure the URL is encoded correctly before querying the database
-  // This step assumes originalImageUrl is already properly encoded once
-  // If it's not, adjust the encoding logic accordingly
-  const decodedImageUrl = decodeURIComponent(originalImageUrl);
+  const encodedImageUrl = normalizeAndEncodeUrl(originalImageUrl);
   try {
-      const { data, error } = await supabase
-          .from('dalle_images')
-          .select('dalle_image_url')
-          .eq('wikipedia_image_url', decodedImageUrl)
-          .single();
-      if (error) {
-          console.error("Error in getExistingImage:", error);
-          return null;
-      }
-      return data ? data.dalle_image_url : null;
-  } catch (error) {
-      console.error("Error in getExistingImage:", error);
+    const { data, error } = await supabase
+        .from('dalle_images')
+        .select('dalle_image_url')
+        .eq('wikipedia_image_url', encodedImageUrl);
+
+    if (error) {
+        console.error(`Error querying existing image: ${error.message}`);
+        return null;
+    }
+
+    if (data.length === 0) {
+      console.debug(`No existing image found for URL: ${originalImageUrl}`);
       return null;
+    }
+
+    // If multiple images are found, pick a random one
+    const randomIndex = Math.floor(Math.random() * data.length);
+    console.debug(`Found ${data.length} images, picking one randomly.`);
+    return data[randomIndex].dalle_image_url;
+  } catch (error) {
+    console.error(`Error in getExistingImage: ${error.message}`);
+    return null;
   }
 }
+
 
 async function generateVisionPrompt(imageUrl, articleTitle, imgDescription, openAIKey) {
   const visionApiUrl = 'https://api.openai.com/v1/chat/completions';
