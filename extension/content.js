@@ -62,6 +62,7 @@ function createLoadingIndicator() {
     loader.innerHTML = "Generating Image....";
     loader.style.color = 'black';
     loader.style.padding = '8px';
+    loader.style.position = 'relative';
     // Consider adding an animation or a less intrusive indicator here
     return loader;
 }
@@ -73,7 +74,7 @@ function updateGlobalToggleButton() {
         // Check if all generations are complete
         if (completedGenerations === totalImages) {
             // All images have been processed
-            toggleButton.textContent = showingDalleImages ? 'Show Original' : 'Show DALL-E';
+            toggleButton.textContent = showingDalleImages ? 'Show Original' : 'Show Generated';
             toggleButton.style.backgroundColor = '#4CAF50'; // Use a color to indicate completeness
             toggleButton.style.color = 'white';
         } else {
@@ -99,7 +100,6 @@ async function getExistingDalleImageUrl(fullImageUrl) {
         if (data.dalleImageUrl) {
             // If an existing DALL-E image URL is successfully retrieved
             completedGenerations++; // Consider this as a completed generation
-            ongoingGenerations--; // Decrement since this path also concludes processing for an image
             updateGlobalToggleButton(); // Update the button to reflect new state
 
         }
@@ -108,6 +108,7 @@ async function getExistingDalleImageUrl(fullImageUrl) {
         console.error('Error retrieving existing DALL-E image:', error);
         return null;
     } finally {
+        ongoingGenerations--;
         updateGlobalToggleButton(); // Ensure the button is updated in all cases
     }
 }
@@ -139,7 +140,6 @@ async function processImageInBatch(images, articleTitle) {
 
                 const existingDalleImageUrl = await getExistingDalleImageUrl(adjustedImageUrl);
                 if (!existingDalleImageUrl) {
-                    ongoingGenerations++;
                     generateImageQueue.push({
                         imgElement,
                         fullSizeUrl: adjustedImageUrl, // Pass the resized URL
@@ -198,18 +198,23 @@ async function processSingleImage(imgElement, fullSizeUrl, articleTitle, apiKey,
             },
             body: JSON.stringify(payload)
         });
+        if (!response.ok) {
+            throw new Error(`Failed to generate image, server responded with status: ${response.status}`);
+        }
+
 
         const data = await response.json();
 
         if (data.dalleImageUrl) {
             updateImages(imgElement, data.dalleImageUrl);
-            ongoingGenerations--; // Decrement the number of ongoing generations
-            completedGenerations++; // Increment the number of completed generations
-            updateGlobalToggleButton();
+        } else {
+            throw new Error('DALL-E image URL not found in response');
         }
     } catch (error) {
         console.error('Error generating image:', error);
     } finally {
+        ongoingGenerations--; // Decrement the number of ongoing generations
+        completedGenerations++; // Increment the number of completed generations, even in case of failure to ensure progress tracking
         loader.remove();
         updateGlobalToggleButton();
     }
