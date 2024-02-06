@@ -7,10 +7,9 @@ The extension allows users to toggle between the original Wikipedia images and t
 
 [Built entirely with Code-Bi-Wan ChatGPT](https://chat.openai.com/g/g-ZdiOhxKwp-code-bi-wan)
 
-![example](img/dallepedia.gif)
 
 Video below
-[![Video Here](img/20240126214549.png)](https://www.youtube.com/watch?v=4m2efXbpKqQ)
+[![Video Here](img/dallepedia.gif)](https://www.youtube.com/watch?v=4m2efXbpKqQ)
 
 
 ## Features
