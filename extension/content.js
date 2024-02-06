@@ -1,14 +1,21 @@
 console.log("WikipixAI initialized...1");
-
+let hoverEnabled = false;
 let showingDalleImages = false;
 let ongoingGenerations = 0;
+let completedGenerations = 0; // Add a variable to track the number of completed generations
+let totalImages = 0;
 const DEBUG_MODE = true; // Set to 'true' to enable detailed logging for debugging
 const supabaseAuthToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjemp6a2txYWdjdXZ2cXF2d2VxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDU4Njg5MDksImV4cCI6MjAyMTQ0NDkwOX0.zGPd2QV-zUf7QrXlsfde9FTivgSbRX90t2Bt0FG2yyQ';
 let lastClickedThumbnail = null; // Global variable to track the last clicked thumbnail
 
-function isDalleEnabled(callback) {
-    chrome.storage.local.get('isExtensionEnabled', function(data) {
-        callback(data.isExtensionEnabled !== false);
+function isDalleEnabled() {
+    chrome.storage.local.get(['isExtensionEnabled', 'hoverFeatureEnabled'], function(data) {
+        const isEnabled = data.isExtensionEnabled !== false; // Default true if not explicitly set to false
+        hoverEnabled = data.hoverFeatureEnabled === true; // Set global hoverEnabled based on stored setting
+
+        if (isEnabled) {
+            init(); // Call init directly after settings are confirmed
+        }
     });
 }
 async function getWikiImageMetadata(fileName) {
@@ -52,23 +59,30 @@ function getImageDescription(imgElement) {
 
 function createLoadingIndicator() {
     const loader = document.createElement('div');
-    loader.style.border = '2px solid yellow'; // Initial border color for loading
-    loader.style.borderRadius = '5px';
+    loader.innerHTML = "Generating Image....";
+    loader.style.color = 'black';
+    loader.style.padding = '8px';
+    // Consider adding an animation or a less intrusive indicator here
     return loader;
 }
+
 
 function updateGlobalToggleButton() {
     const toggleButton = document.getElementById('toggleAllImagesButton');
     if (toggleButton) {
-        toggleButton.textContent = ongoingGenerations > 0 ? 'Loading...' : (showingDalleImages ? 'Show Original' : 'Show DALL-E');
-        // Update button color only when all generations are complete
-        if (ongoingGenerations === 0) {
-            toggleButton.style.backgroundColor = 'lightblue';
-            toggleButton.style.color = 'white'; // White text for light blue background
+        // Check if all generations are complete
+        if (completedGenerations === totalImages) {
+            // All images have been processed
+            toggleButton.textContent = showingDalleImages ? 'Show Original' : 'Show DALL-E';
+            toggleButton.style.backgroundColor = '#4CAF50'; // Use a color to indicate completeness
+            toggleButton.style.color = 'white';
         } else {
-            toggleButton.style.backgroundColor = 'yellow';
-            toggleButton.style.color = 'black'; // Better contrast with yellow background
+            // Update with current progress
+            toggleButton.textContent = `Loading ${completedGenerations}/${totalImages}`;
+            toggleButton.style.backgroundColor = '#f0ad4e'; // Loading state color
+            toggleButton.style.color = 'black';
         }
+        toggleButton.style.transition = 'background-color 0.3s ease';
     }
 }
 
@@ -82,18 +96,28 @@ async function getExistingDalleImageUrl(fullImageUrl) {
             }
         });
         const data = await response.json();
+        if (data.dalleImageUrl) {
+            // If an existing DALL-E image URL is successfully retrieved
+            completedGenerations++; // Consider this as a completed generation
+            ongoingGenerations--; // Decrement since this path also concludes processing for an image
+            updateGlobalToggleButton(); // Update the button to reflect new state
+
+        }
         return data.dalleImageUrl;
     } catch (error) {
         console.error('Error retrieving existing DALL-E image:', error);
         return null;
     } finally {
-        updateGlobalToggleButton();
+        updateGlobalToggleButton(); // Ensure the button is updated in all cases
     }
 }
 
 
 // This function now properly queues images for processing based on metadata from Wikipedia
 async function processImageInBatch(images, articleTitle) {
+    totalImages = images.length; 
+    ongoingGenerations = totalImages; // Initialize `ongoingGenerations` with the total number of images
+    completedGenerations = 0; // Reset completed generations count
     let generateImageQueue = [];
 
     for (const imgElement of images) {
@@ -115,6 +139,7 @@ async function processImageInBatch(images, articleTitle) {
 
                 const existingDalleImageUrl = await getExistingDalleImageUrl(adjustedImageUrl);
                 if (!existingDalleImageUrl) {
+                    ongoingGenerations++;
                     generateImageQueue.push({
                         imgElement,
                         fullSizeUrl: adjustedImageUrl, // Pass the resized URL
@@ -123,7 +148,6 @@ async function processImageInBatch(images, articleTitle) {
                         width: targetWidth, // Pass the correct width for the resized image
                         height: targetHeight // Pass the correct height for the resized image
                     });
-                    ongoingGenerations++;
                 } else {
                     updateImages(imgElement, existingDalleImageUrl);
                 }
@@ -147,6 +171,7 @@ async function processBatch(batch) {
         processSingleImage(item.imgElement, item.fullSizeUrl, item.articleTitle, apiKey, item.description, item.width, item.height)
     );
     await Promise.all(generationPromises);
+    updateGlobalToggleButton();
 }
 
 // Adjusted to use metadata for image processing
@@ -178,12 +203,14 @@ async function processSingleImage(imgElement, fullSizeUrl, articleTitle, apiKey,
 
         if (data.dalleImageUrl) {
             updateImages(imgElement, data.dalleImageUrl);
+            ongoingGenerations--; // Decrement the number of ongoing generations
+            completedGenerations++; // Increment the number of completed generations
+            updateGlobalToggleButton();
         }
     } catch (error) {
         console.error('Error generating image:', error);
     } finally {
         loader.remove();
-        ongoingGenerations--;
         updateGlobalToggleButton();
     }
 }
@@ -209,9 +236,11 @@ function updateImages(imgElement, dalleImageUrl) {
     imgElement.src = showingDalleImages ? dalleImageUrl : imgElement.getAttribute('data-original-src');
     imgElement.setAttribute('data-dalle-src', dalleImageUrl);
     imgElement.classList.add('toggleable-image');
-    imgElement.style.border = '2px solid lightblue';
+    imgElement.style.border = '4px groove rgba(36,164,72,0.5)';
     imgElement.removeAttribute('srcset');
+    addHoverListeners(imgElement); // No need to pass hoverEnabled anymore
 }
+
 
 function toggleAllImages() {
     const images = document.querySelectorAll('#bodyContent img.toggleable-image');
@@ -239,10 +268,11 @@ function attachGlobalToggleButton() {
     let toggleButton = document.createElement('button');
     toggleButton.id = 'toggleAllImagesButton';
     toggleButton.textContent = 'Show DALL-E';
-    toggleButton.style.padding = '5px 10px';
-    toggleButton.style.fontSize = '12px';
-    toggleButton.style.background = showingDalleImages ? 'lightblue' : 'yellow'; // Initial color based on DALL-E generation state
-    toggleButton.style.color = 'black';
+    // Updated initial styling
+    toggleButton.style.padding = '10px 15px'; // Slightly larger for a modern look
+    toggleButton.style.fontSize = '14px'; // Slightly larger font size
+    toggleButton.style.background = '#007bff'; // Bootstrap primary blue as the default
+    toggleButton.style.color = '#fff';
     toggleButton.style.border = 'none';
     toggleButton.style.borderRadius = '5px';
     toggleButton.style.cursor = 'pointer';
@@ -250,6 +280,7 @@ function attachGlobalToggleButton() {
     toggleButton.style.zIndex = '1000';
     toggleButton.style.right = '10px';
     toggleButton.style.top = '10px';
+    toggleButton.style.boxShadow = '0 2px 4px 0 rgba(0,0,0,.2)'; // Add a subtle shadow
 
     toggleButton.onclick = toggleAllImages;
     document.body.insertBefore(toggleButton, document.body.firstChild);
@@ -394,20 +425,42 @@ function addToggle(modalNode, largeImage) {
     modalNode.appendChild(toggleButton);
 }
 
-function init() {
-    isDalleEnabled(async (enabled) => {
-        if (enabled) {
-            attachGlobalToggleButton();
-            observeModalChanges();
-            setupBeforeUnloadWarning();
-            const articleTitle = document.querySelector('h1').innerText;
-            const images = document.querySelectorAll('#bodyContent img:not([style*="display:none"]):not([style*="visibility:hidden"])');
-            const eligibleImages = Array.from(images).filter(img => img.offsetWidth > 50 && img.offsetHeight > 50);
+function addHoverListeners(imgElement) {
+    if (!hoverEnabled) return; // Ensure hover functionality is enabled
 
-            if (eligibleImages.length > 0) {
-                await processImageInBatch(eligibleImages, articleTitle);
-            }
+    imgElement.addEventListener('mouseenter', () => {
+        // Determine which image to show on hover based on the current mode
+        const srcToSwitch = showingDalleImages ? imgElement.getAttribute('data-original-src') : imgElement.getAttribute('data-dalle-src');
+        if (srcToSwitch) {
+            imgElement.src = srcToSwitch;
+        }
+    });
+
+    imgElement.addEventListener('mouseleave', () => {
+        // Determine which image to revert to after hover based on the current mode
+        const srcToRevert = showingDalleImages ? imgElement.getAttribute('data-dalle-src') : imgElement.getAttribute('data-original-src');
+        if (srcToRevert) {
+            imgElement.src = srcToRevert;
         }
     });
 }
-init();
+
+function init() {
+    attachGlobalToggleButton();
+    observeModalChanges();
+    setupBeforeUnloadWarning();
+
+    // Now that hoverEnabled is a global variable, its state is directly accessible here
+    // Proceed with additional initialization logic that may depend on hoverEnabled or other conditions
+
+    const articleTitle = document.querySelector('h1').innerText;
+    const images = document.querySelectorAll('#bodyContent img:not([style*="display:none"]):not([style*="visibility:hidden"])');
+    const eligibleImages = Array.from(images).filter(img => img.offsetWidth > 50 && img.offsetHeight > 50);
+
+    if (eligibleImages.length > 0) {
+        processImageInBatch(eligibleImages, articleTitle);
+    }
+    updateGlobalToggleButton();
+}
+isDalleEnabled();
+
