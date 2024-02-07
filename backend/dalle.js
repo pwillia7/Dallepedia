@@ -174,7 +174,23 @@ async function generateImageWithStableDiffusion(prompt, originalImageUrl, origin
               weight: 1.3,
               threshold_a: 100,
               threshold_b: 225
-            }
+            },
+            {
+              control_mode: "Balanced",
+              enabled: "True",
+              guidance_end: 1,
+              guidance_start: 0,
+              processor_res: Math.min(adjustedWidth, adjustedHeight),
+              image: {
+                image: `data:image/jpg;base64,${base64Image}`
+              },
+              loopback: "False",
+              low_vram: "False",
+              model: "diffusers_xl_depth_small [c95f3c5c]",
+              module: "depth_anything",
+              pixel_perfect: "True",
+              weight: 1
+             }
           ]
         } 
       }
